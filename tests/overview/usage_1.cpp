@@ -8,7 +8,11 @@ using namespace std;
 int main() {
     Exp e;
     e.loadExp("1+2^3-4");
+    std::cout << "\nAnswer: " << e.calculate() << "\n\n";
     e.loadExp("1+2^3*sin(4+5)-6");
+    std::cout << "\nAnswer: " << e.calculate() << "\n\n";
+    e.loadExp("|1-3|*||1+1|-4|");
+    std::cout << "\nAnswer: " << e.calculate() << "\n\n";
 
     return 0;
 }

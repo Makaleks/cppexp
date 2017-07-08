@@ -40,7 +40,8 @@ enum NType {
 
 bool Exp::loadExp (std::string expr) {
     std::cout << "Input:\n" << expr << '\n';
-    auto getNext = [&](std::string::iterator it, Node *n) -> std::string::iterator {
+    std::stack <Node> op_stck;
+    auto getNext = [&](std::string::iterator it, Node *n, FuncStore::State *s) -> std::string::iterator {
         auto s_it = it;
         if (std::isdigit(*it)) {
             do {
@@ -50,27 +51,39 @@ bool Exp::loadExp (std::string expr) {
             n->clear();
             *n = Node(num);
             //printf("= %10Lg: const\n", num);
+            s->setArgument();
             return it;
         }
         else {
-            auto tmp_it = func_store_.end();
+            size_t offset = 0;
             while (true) {
                 it++;
-                if (it == expr.end()) {
-                    n->clear();
-                    *n = Node(std::string(s_it, it));
-                    //printf("= %10s: var\n", std::string(s_it, it).c_str());
-                    return it;
-                }
                 //if (*s_it == 's') puts(std::string(s_it, it).c_str());
-                tmp_it = func_store_.find(std::string(s_it, it));
-                if (tmp_it != func_store_.end()) {
-                    n->clear();
-                   *n = Node(tmp_it->second);
-                    //printf("= %10s: func\n", std::string(s_it, it).c_str());
-                    return it; 
+                offset = 0;
+                if (func_store_.find(std::string(s_it, it), n, s, &offset)) {
+                    if (offset != 0) {
+                        it = s_it + offset;
+                        n->clear();
+                        *n = Node(std::string(s_it, it));
+                        return it;
+                    }
+                    else {
+                        if (n->func_.isBrC() 
+                                && *s == FuncStore::State::BRACKET
+                                && op_stck.top().func_.isBrOF() == false) {
+                            n->func_.type = FuncNode::BRACKET_OPEN;
+                        }
+                        else if (n->func_.isBrO() 
+                                && op_stck.empty() == false
+                                && op_stck.top().func_.isFunc()) {
+                            n->func_.type 
+                                = FuncNode::BRACKET_OPEN_FUNCTION;
+                        }
+                        s->setOperator();
+                        return it;
+                    }
                 }
-                else if ((it + 1 != expr.end() && std::isdigit(*it)) && func_store_.find(std::string(1, *(it + 1))) != func_store_.end()) {
+                else if (it == expr.end()) {
                     n->clear();
                     *n = Node(std::string(s_it, it));
                     //printf("= %10s: var\n", std::string(s_it, it).c_str());
@@ -81,7 +94,6 @@ bool Exp::loadExp (std::string expr) {
     };
     auto it = expr.begin();
     Node tmp(0);
-    std::stack <Node> op_stck;
     std::vector <Node> rpn;
     std::map <std::string, VType> varlst;
     auto pf = [&]() {
@@ -98,7 +110,7 @@ bool Exp::loadExp (std::string expr) {
     auto ps = [&]() {
         printf("%2d    stck: ", i); 
         for (auto nit = rpn.begin(); nit != rpn.end(); nit++) 
-            std::cout << nit->getString() <<", "; 
+            std::cout << nit->toString() <<", "; 
         printf("\n   op_stck: "); 
         auto cp = op_stck;
         std::vector<Node> v;
@@ -106,11 +118,12 @@ bool Exp::loadExp (std::string expr) {
             v.push_back(cp.top());
             cp.pop();
         }
-        for (size_t j = v.size(); j > 0; j--) std::cout << v[j-1].getString() <<", "; 
+        for (size_t j = v.size(); j > 0; j--) std::cout << v[j-1].toString() <<", "; 
         puts("\n"); i++;
     };
+    FuncStore::State s;
     while(it != expr.end()) {
-        it = getNext(it, &tmp);
+        it = getNext(it, &tmp, &s);
         if (tmp.isConst()) {
             rpn.push_back(tmp);
         }
@@ -126,7 +139,8 @@ bool Exp::loadExp (std::string expr) {
                 op_stck.push(tmp);
             }
             else {
-                if (f.isOpU() || f.isFunc() || f.isBrO()) {
+                //puts(f.toString().c_str());
+                if (f.isOpU() || f.isFunc() || f.isBrO() || f.isBrOF()) {
                     //rpn.push_back(top);
                     //op_stck.pop();
                     //if (f.isFunc()) std::cout << "Pushing " << f.name << '\n';
@@ -143,10 +157,15 @@ bool Exp::loadExp (std::string expr) {
                     op_stck.push(tmp);
                 }
                 else if (f.isBrC()) {
-                    while (op_stck.top().func_.openBr != f.openBr) {
-                        rpn.push_back(op_stck.top());
+                    while (op_stck.top().func_.closeBr != f.closeBr) {
+                        if (op_stck.top().func_.isBrO() 
+                                || op_stck.top().func_.isBrOF() 
+                                == false) {
+                            rpn.push_back(op_stck.top());
+                        }
                         op_stck.pop();
                     }
+                    rpn.push_back(op_stck.top());
                     op_stck.pop();
                     if (op_stck.empty() == false 
                             && op_stck.top().func_.isFunc()) {
@@ -158,16 +177,31 @@ bool Exp::loadExp (std::string expr) {
         }
         else return false;
         ps();
+        s.next();
     }
     //std::cout << op_stck.size() << '\n';
     while (op_stck.empty() == false) {
-        rpn.push_back(op_stck.top());
+        if ((op_stck.top().func_.isBrO() 
+                || op_stck.top().func_.isBrOF()) 
+                == false) {
+            rpn.push_back(op_stck.top());
+        }
         op_stck.pop();
     }
     pf();
     rpn_ = rpn;
     varlst_ = varlst;
     return true;
+}
+
+VType Exp::calculate() {
+    std::stack<VType> stck;
+    for (auto &v : rpn_) {
+        if (v.isConst()) stck.push(v.val_);
+        else if (v.isFunc()) stck.push(v.func_.func(stck));
+        else stck.push(varlst_[v.name_]);
+    }
+    return stck.top();
 }
 
 #include <cmath>
@@ -211,19 +245,25 @@ VType nsin (std::stack<VType> &stck) {
     stck.pop();
     return sin(var);
 }
-VType br (std::stack<VType> &stck) {
+VType nbr (std::stack<VType> &stck) {
     VType var = stck.top();
     stck.pop();
     return var;
 }
+VType nabs (std::stack<VType> &stck) {
+    VType var = stck.top();
+    stck.pop();
+    return abs(var);
+}
 
 Exp::Exp () {
-    func_store_["+"] = FuncNode (FuncNode::OPERATOR_B, nplus,  "+", 100);
-    func_store_["-"] = FuncNode (FuncNode::OPERATOR_B, nminus, "-", 100);
-    func_store_["*"] = FuncNode (FuncNode::OPERATOR_B, nmul,   "*", 200);
-    func_store_["/"] = FuncNode (FuncNode::OPERATOR_B, ndiv,   "/", 200);
-    func_store_["^"] = FuncNode (FuncNode::OPERATOR_B, npow,   "^", 250);
-    func_store_["("] = FuncNode (FuncNode::BRACKET_OPEN, br,   "(", 255, "(");
-    func_store_[")"] = FuncNode (FuncNode::BRACKET_CLOSE, br,   ")", 255, "(");
-    func_store_["sin"] = FuncNode (FuncNode::FUNCTION, nsin,   "sin", 255);
+    func_store_.addOperator(nplus, "+", 100);
+    func_store_.addOperator(nminus, "-", 100);
+    func_store_.addOperator(nmul, "*", 200);
+    func_store_.addOperator(ndiv, "/", 200);
+    func_store_.addOperator(npow, "^", 250);
+    func_store_.addBrackets(nbr, "(", ")");
+    func_store_.addFunction(nsin, "sin");
+    func_store_.addFunction(nabs, "abs");
+    func_store_.addBrackets(nabs, "|", "|");
 }
